@@ -34,6 +34,8 @@ constexpr uint8_t kPinMouthMotorB = 5;
 constexpr uint8_t kPinSoundAnalog = A0;
 // LED: D2 -> 220–330 ohm -> LED -> GND
 constexpr uint8_t kPinMouthLed = 2;
+// SPST toggle: one leg to GND, other to this pin. LOW = motors disabled (pull-up inside).
+constexpr uint8_t kPinMotorDisableSwitch = 4;
 
 // --- Serial ---
 constexpr long kSerialBaud = 9600;
@@ -105,6 +107,10 @@ enum MotorMode : uint8_t { M_HALT = 0, M_FWD = 1, M_REV = 2 };
 MotorMode bodyModeLog = M_HALT;
 MotorMode mouthModeLog = M_HALT;
 
+bool motorsMovementEnabled() {
+  return digitalRead(kPinMotorDisableSwitch) == HIGH;
+}
+
 void logMotorMode(const __FlashStringHelper* tag, MotorMode& prev, MotorMode next) {
   if (prev != next) {
     prev = next;
@@ -125,10 +131,16 @@ void bodyHalt() {
   logMotorMode(F("body"), bodyModeLog, M_HALT);
 }
 void bodyFwd() {
+  if (!motorsMovementEnabled()) {
+    return;
+  }
   bodyMotor.forward();
   logMotorMode(F("body"), bodyModeLog, M_FWD);
 }
 void bodyRev() {
+  if (!motorsMovementEnabled()) {
+    return;
+  }
   bodyMotor.backward();
   logMotorMode(F("body"), bodyModeLog, M_REV);
 }
@@ -137,10 +149,16 @@ void mouthHalt() {
   logMotorMode(F("mouth"), mouthModeLog, M_HALT);
 }
 void mouthFwd() {
+  if (!motorsMovementEnabled()) {
+    return;
+  }
   mouthMotor.forward();
   logMotorMode(F("mouth"), mouthModeLog, M_FWD);
 }
 void mouthRev() {
+  if (!motorsMovementEnabled()) {
+    return;
+  }
   mouthMotor.backward();
   logMotorMode(F("mouth"), mouthModeLog, M_REV);
 }
@@ -153,6 +171,8 @@ void setup() {
 
   pinMode(kPinMouthLed, OUTPUT);
   digitalWrite(kPinMouthLed, LOW);
+
+  pinMode(kPinMotorDisableSwitch, INPUT_PULLUP);
 
   Serial.begin(kSerialBaud);
 }
@@ -180,6 +200,14 @@ void updateMouthLed() {
 }
 
 void SMBillyBass() {
+  if (!motorsMovementEnabled()) {
+    bodyHalt();
+    mouthHalt();
+    fishState = kFishStateWait;
+    talking = false;
+    return;
+  }
+
   switch (fishState) {
     case kFishStateWait:
       if (soundVolume > kSilenceThreshold) {
@@ -230,6 +258,9 @@ void updateSoundInput() {
 }
 
 void openMouth() {
+  if (!motorsMovementEnabled()) {
+    return;
+  }
   mouthMotor.halt();
   mouthMotor.setSpeed(kMouthOpenSpeed);
   mouthMotor.forward();
@@ -237,6 +268,9 @@ void openMouth() {
 }
 
 void closeMouth() {
+  if (!motorsMovementEnabled()) {
+    return;
+  }
   mouthMotor.halt();
   mouthMotor.setSpeed(kMouthCloseSpeed);
   mouthMotor.backward();
@@ -244,6 +278,9 @@ void closeMouth() {
 }
 
 void articulateBody(bool talking) {
+  if (!motorsMovementEnabled()) {
+    return;
+  }
   if (talking) {
     if (currentTime > bodyActionTime) {
       int r = floor(random(0, kBodyArticulationRandomMax));
@@ -287,6 +324,9 @@ void articulateBody(bool talking) {
 
 
 void flap() {
+  if (!motorsMovementEnabled()) {
+    return;
+  }
   bodyMotor.setSpeed(kFlapBodySpeed);
   bodyRev();
   delay(kFlapHoldMs);
