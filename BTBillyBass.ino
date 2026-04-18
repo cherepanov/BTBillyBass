@@ -26,146 +26,269 @@
 
 #include <MX1508.h>
 
-MX1508 bodyMotor(6, 9); // Sets up an MX1508 controlled motor on PWM pins 6 and 9
-MX1508 mouthMotor(5, 3); // Sets up an MX1508 controlled motor on PWM pins 5 and 3
+// --- Pin assignments (Nano) ---
+constexpr uint8_t kPinBodyMotorA = 6;
+constexpr uint8_t kPinBodyMotorB = 9;
+constexpr uint8_t kPinMouthMotorA = 3;
+constexpr uint8_t kPinMouthMotorB = 5;
+constexpr uint8_t kPinSoundAnalog = A0;
+// LED: D2 -> 220–330 ohm -> LED -> GND
+constexpr uint8_t kPinMouthLed = 2;
 
-int soundPin = A0; // Sound input
+// --- Serial ---
+constexpr long kSerialBaud = 9600;
 
-int silence = 12; // Threshold for "silence". Anything below this level is ignored.
-int bodySpeed = 0; // body motor speed initialized to 0
-int soundVolume = 0; // variable to hold the analog audio value
-int fishState = 0; // variable to indicate the state Billy is in
+// --- Audio (analogRead 0..1023) ---
+constexpr int kSilenceThreshold = 250;
+constexpr int kPrevSoundVolumeUnset = -1;
 
-bool talking = false; //indicates whether the fish should be talking or not
+// --- Mouth motor PWM speeds (0..255) ---
+constexpr int kMouthOpenSpeed = 220;
+constexpr int kMouthCloseSpeed = 180;
 
-//these variables are for storing the current time, scheduling times for actions to end, and when the action took place
+// --- Body motor PWM speeds (0..255) ---
+constexpr int kBodyMotorSpeedStop = 0;
+constexpr int kBodyMotorSpeedSlow = 150;
+constexpr int kBodyMotorSpeedMedium = 200;
+constexpr int kBodyMotorSpeedFull = 255;
+constexpr int kFlapBodySpeed = 180;
+
+// --- Timing (ms) ---
+constexpr unsigned long kMouthLedBlinkMs = 120;
+constexpr unsigned long kMouthTalkPhaseMs = 100;
+constexpr unsigned long kWaitStateMotorHaltAfterMouthMs = 100;
+constexpr unsigned long kBoredIdleMs = 1500;
+constexpr unsigned long kFlapHoldMs = 500;
+constexpr unsigned long kBodyActionScheduleMinMs = 500;
+constexpr unsigned long kBodyActionScheduleMaxMs = 1000;
+constexpr unsigned long kBodyTailActionMinMs = 900;
+constexpr unsigned long kBodyTailActionMaxMs = 1200;
+constexpr unsigned long kBodyLongActionMinMs = 1500;
+constexpr unsigned long kBodyLongActionMaxMs = 3000;
+constexpr unsigned long kBodyRestMinMs = 20;
+constexpr unsigned long kBodyRestMaxMs = 50;
+
+// --- Random ranges ---
+constexpr int kBodyArticulationRandomMax = 8;
+constexpr long kFlapCooldownMinS = 30;
+constexpr long kFlapCooldownMaxS = 60;
+constexpr long kMsPerSecond = 1000L;
+
+enum FishState : uint8_t {
+  kFishStateWait = 0,
+  kFishStateTalking = 1,
+  kFishStateFlap = 2
+};
+
+MX1508 bodyMotor(kPinBodyMotorA, kPinBodyMotorB);
+MX1508 mouthMotor(kPinMouthMotorA, kPinMouthMotorB);
+
+int soundPin = kPinSoundAnalog;
+
+unsigned long mouthLedLastToggle = 0;
+bool mouthLedOn = false;
+
+int bodySpeed = kBodyMotorSpeedStop;
+int soundVolume = 0;
+int prevSoundVolume = kPrevSoundVolumeUnset;
+FishState fishState = kFishStateWait;
+
+bool talking = false;
+
 long currentTime;
 long mouthActionTime;
 long bodyActionTime;
 long lastActionTime;
 
-void setup() {
-//make sure both motor speeds are set to zero
-  bodyMotor.setSpeed(0); 
-  mouthMotor.setSpeed(0);
+enum MotorMode : uint8_t { M_HALT = 0, M_FWD = 1, M_REV = 2 };
 
-//input mode for sound pin
+MotorMode bodyModeLog = M_HALT;
+MotorMode mouthModeLog = M_HALT;
+
+void logMotorMode(const __FlashStringHelper* tag, MotorMode& prev, MotorMode next) {
+  if (prev != next) {
+    prev = next;
+    Serial.print(tag);
+    Serial.print(' ');
+    if (next == M_HALT) {
+      Serial.println(F("halt"));
+    } else if (next == M_FWD) {
+      Serial.println(F("forward"));
+    } else {
+      Serial.println(F("backward"));
+    }
+  }
+}
+
+void bodyHalt() {
+  bodyMotor.halt();
+  logMotorMode(F("body"), bodyModeLog, M_HALT);
+}
+void bodyFwd() {
+  bodyMotor.forward();
+  logMotorMode(F("body"), bodyModeLog, M_FWD);
+}
+void bodyRev() {
+  bodyMotor.backward();
+  logMotorMode(F("body"), bodyModeLog, M_REV);
+}
+void mouthHalt() {
+  mouthMotor.halt();
+  logMotorMode(F("mouth"), mouthModeLog, M_HALT);
+}
+void mouthFwd() {
+  mouthMotor.forward();
+  logMotorMode(F("mouth"), mouthModeLog, M_FWD);
+}
+void mouthRev() {
+  mouthMotor.backward();
+  logMotorMode(F("mouth"), mouthModeLog, M_REV);
+}
+
+void setup() {
+  bodyMotor.setSpeed(kBodyMotorSpeedStop);
+  mouthMotor.setSpeed(kBodyMotorSpeedStop);
+
   pinMode(soundPin, INPUT);
 
-  Serial.begin(9600);
+  pinMode(kPinMouthLed, OUTPUT);
+  digitalWrite(kPinMouthLed, LOW);
+
+  Serial.begin(kSerialBaud);
 }
 
 void loop() {
-  currentTime = millis(); //updates the time each time the loop is run
-  updateSoundInput(); //updates the volume level detected
-  SMBillyBass(); //this is the switch/case statement to control the state of the fish
+  currentTime = millis();
+  updateSoundInput();
+  SMBillyBass();
+  updateMouthLed();
+}
+
+void updateMouthLed() {
+  if (fishState == kFishStateTalking) {
+    if (currentTime - mouthLedLastToggle >= kMouthLedBlinkMs) {
+      mouthLedLastToggle = currentTime;
+      mouthLedOn = !mouthLedOn;
+      digitalWrite(kPinMouthLed, mouthLedOn ? HIGH : LOW);
+    }
+  } else {
+    if (mouthLedOn) {
+      mouthLedOn = false;
+      digitalWrite(kPinMouthLed, LOW);
+    }
+  }
 }
 
 void SMBillyBass() {
   switch (fishState) {
-    case 0: //START & WAITING
-      if (soundVolume > silence) { //if we detect audio input above the threshold
-        if (currentTime > mouthActionTime) { //and if we haven't yet scheduled a mouth movement
-          talking = true; //  set talking to true and schedule the mouth movement action
-          mouthActionTime = currentTime + 100;
-          fishState = 1; // jump to a talking state
+    case kFishStateWait:
+      if (soundVolume > kSilenceThreshold) {
+        if (currentTime > mouthActionTime) {
+          talking = true;
+          mouthActionTime = currentTime + kMouthTalkPhaseMs;
+          fishState = kFishStateTalking;
         }
-      } else if (currentTime > mouthActionTime + 100) { //if we're beyond the scheduled talking time, halt the motors
-        bodyMotor.halt();
-        mouthMotor.halt();
+      } else if (currentTime > mouthActionTime + kWaitStateMotorHaltAfterMouthMs) {
+        bodyHalt();
+        mouthHalt();
       }
-      if (currentTime - lastActionTime > 1500) { //if Billy hasn't done anything in a while, we need to show he's bored
-        lastActionTime = currentTime + floor(random(30, 60)) * 1000L; //you can adjust the numbers here to change how often he flaps
-        fishState = 2; //jump to a flapping state!
+      if (currentTime - lastActionTime > kBoredIdleMs) {
+        lastActionTime = currentTime + floor(random(kFlapCooldownMinS, kFlapCooldownMaxS)) * kMsPerSecond;
+        fishState = kFishStateFlap;
       }
       break;
 
-    case 1: //TALKING
-      if (currentTime < mouthActionTime) { //if we have a scheduled mouthActionTime in the future....
-        if (talking) { // and if we think we should be talking
-          openMouth(); // then open the mouth and articulate the body
+    case kFishStateTalking:
+      if (currentTime < mouthActionTime) {
+        if (talking) {
+          openMouth();
           lastActionTime = currentTime;
           articulateBody(true);
         }
       }
-      else { // otherwise, close the mouth, don't articulate the body, and set talking to false
+      else {
         closeMouth();
         articulateBody(false);
         talking = false;
-        fishState = 0; //jump back to waiting state
+        fishState = kFishStateWait;
       }
       break;
 
-    case 2: //GOTTA FLAP!
-      //Serial.println("I'm bored. Gotta flap.");
+    case kFishStateFlap:
       flap();
-      fishState = 0;
+      fishState = kFishStateWait;
       break;
   }
 }
 
-int updateSoundInput() {
+void updateSoundInput() {
   soundVolume = analogRead(soundPin);
+  if (soundVolume != prevSoundVolume) {
+    prevSoundVolume = soundVolume;
+    Serial.println(soundVolume);
+  }
 }
 
 void openMouth() {
-  mouthMotor.halt(); //stop the mouth motor
-  mouthMotor.setSpeed(220); //set the mouth motor speed
-  mouthMotor.forward(); //open the mouth
+  mouthMotor.halt();
+  mouthMotor.setSpeed(kMouthOpenSpeed);
+  mouthMotor.forward();
+  logMotorMode(F("mouth"), mouthModeLog, M_FWD);
 }
 
 void closeMouth() {
-  mouthMotor.halt(); //stop the mouth motor
-  mouthMotor.setSpeed(180); //set the mouth motor speed
-  mouthMotor.backward(); // close the mouth
+  mouthMotor.halt();
+  mouthMotor.setSpeed(kMouthCloseSpeed);
+  mouthMotor.backward();
+  logMotorMode(F("mouth"), mouthModeLog, M_REV);
 }
 
-void articulateBody(bool talking) { //function for articulating the body
-  if (talking) { //if Billy is talking
-    if (currentTime > bodyActionTime) { // and if we don't have a scheduled body movement
-      int r = floor(random(0, 8)); // create a random number between 0 and 7)
+void articulateBody(bool talking) {
+  if (talking) {
+    if (currentTime > bodyActionTime) {
+      int r = floor(random(0, kBodyArticulationRandomMax));
       if (r < 1) {
-        bodySpeed = 0; // don't move the body
-        bodyActionTime = currentTime + floor(random(500, 1000)); //schedule body action for .5 to 1 seconds from current time
-        bodyMotor.forward(); //move the body motor to raise the head
+        bodySpeed = kBodyMotorSpeedStop;
+        bodyActionTime = currentTime + floor(random(kBodyActionScheduleMinMs, kBodyActionScheduleMaxMs));
+        bodyFwd();
 
       } else if (r < 3) {
-        bodySpeed = 150; //move the body slowly
-        bodyActionTime = currentTime + floor(random(500, 1000)); //schedule body action for .5 to 1 seconds from current time
-        bodyMotor.forward(); //move the body motor to raise the head
+        bodySpeed = kBodyMotorSpeedSlow;
+        bodyActionTime = currentTime + floor(random(kBodyActionScheduleMinMs, kBodyActionScheduleMaxMs));
+        bodyFwd();
 
       } else if (r == 4) {
-        bodySpeed = 200;  // move the body medium speed
-        bodyActionTime = currentTime + floor(random(500, 1000)); //schedule body action for .5 to 1 seconds from current time
-        bodyMotor.forward(); //move the body motor to raise the head
+        bodySpeed = kBodyMotorSpeedMedium;
+        bodyActionTime = currentTime + floor(random(kBodyActionScheduleMinMs, kBodyActionScheduleMaxMs));
+        bodyFwd();
 
-      } else if ( r == 5 ) {
-        bodySpeed = 0; //set body motor speed to 0
-        bodyMotor.halt(); //stop the body motor (to keep from violent sudden direction changes)
-        bodyMotor.setSpeed(255); //set the body motor to full speed
-        bodyMotor.backward(); //move the body motor to raise the tail
-        bodyActionTime = currentTime + floor(random(900, 1200)); //schedule body action for .9 to 1.2 seconds from current time
+      } else if (r == 5) {
+        bodySpeed = kBodyMotorSpeedStop;
+        bodyHalt();
+        bodyMotor.setSpeed(kBodyMotorSpeedFull);
+        bodyRev();
+        bodyActionTime = currentTime + floor(random(kBodyTailActionMinMs, kBodyTailActionMaxMs));
       }
       else {
-        bodySpeed = 255; // move the body full speed
-        bodyMotor.forward(); //move the body motor to raise the head
-        bodyActionTime = currentTime + floor(random(1500, 3000)); //schedule action time for 1.5 to 3.0 seconds from current time
+        bodySpeed = kBodyMotorSpeedFull;
+        bodyFwd();
+        bodyActionTime = currentTime + floor(random(kBodyLongActionMinMs, kBodyLongActionMaxMs));
       }
     }
 
-    bodyMotor.setSpeed(bodySpeed); //set the body motor speed
+    bodyMotor.setSpeed(bodySpeed);
   } else {
-    if (currentTime > bodyActionTime) { //if we're beyond the scheduled body action time
-      bodyMotor.halt(); //stop the body motor
-      bodyActionTime = currentTime + floor(random(20, 50)); //set the next scheduled body action to current time plus .02 to .05 seconds
+    if (currentTime > bodyActionTime) {
+      bodyHalt();
+      bodyActionTime = currentTime + floor(random(kBodyRestMinMs, kBodyRestMaxMs));
     }
   }
 }
 
 
 void flap() {
-  bodyMotor.setSpeed(180); //set the body motor to full speed
-  bodyMotor.backward(); //move the body motor to raise the tail
-  delay(500); //wait a bit, for dramatic effect
-  bodyMotor.halt(); //halt the motor
+  bodyMotor.setSpeed(kFlapBodySpeed);
+  bodyRev();
+  delay(kFlapHoldMs);
+  bodyHalt();
 }
