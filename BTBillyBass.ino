@@ -7,11 +7,12 @@
  use the MX1508 driver chip. It may also work with other H-bridges that use different
  chips (such as the L298N), so long as you can PWM the inputs.
 
- This code watches for a voltage increase on input A0, and when sound rises above a
- set threshold it opens the mouth of the fish. When the voltage falls below the threshold,
- the mouth closes.The result is the appearance of the mouth "riding the wave" of audio
- amplitude, and reacting to each voltage spike by opening again. There is also some code
- which adds body movements for a bit more personality while talking.
+ This code reads stereo audio on A0 (left) and A1 (right), mixes them with equal weights
+ (adjustable) for detection, and when the combined level rises above a set threshold it
+ opens the mouth of the fish. When the level falls below the threshold, the mouth closes.
+ The result is the appearance of the mouth "riding the wave" of audio amplitude, and
+ reacting to each spike by opening again. There is also some code which adds body
+ movements for a bit more personality while talking.
 
  Most of this work was based on the code written by jswett77, and can be found here:
  https://github.com/jswett77/big_mouth/blob/master/billy.ino
@@ -31,7 +32,8 @@ constexpr uint8_t kPinBodyMotorA = 6;
 constexpr uint8_t kPinBodyMotorB = 9;
 constexpr uint8_t kPinMouthMotorA = 3;
 constexpr uint8_t kPinMouthMotorB = 5;
-constexpr uint8_t kPinSoundAnalog = A0;
+constexpr uint8_t kPinSoundAnalogL = A0;
+constexpr uint8_t kPinSoundAnalogR = A1;
 // LED: D2 -> 220–330 ohm -> LED -> GND
 constexpr uint8_t kPinMouthLed = 2;
 // SPST toggle: one leg to GND, other to this pin. LOW = motors disabled (pull-up inside).
@@ -41,8 +43,12 @@ constexpr uint8_t kPinMotorDisableSwitch = 4;
 constexpr long kSerialBaud = 9600;
 
 // --- Audio (analogRead 0..1023) ---
-constexpr int kSilenceThreshold = 250;
+constexpr int kSilenceThreshold = 25;
 constexpr int kPrevSoundVolumeUnset = -1;
+// Mix L/R for detection: combined = (L * wL + R * wR) / (wL + wR). Use 1,1 for equal
+// average; increase one weight if that channel is consistently quieter in hardware.
+constexpr int kAudioChannelWeightL = 1;
+constexpr int kAudioChannelWeightR = 1;
 
 // --- Mouth motor PWM speeds (0..255) ---
 constexpr int kMouthOpenSpeed = 220;
@@ -84,8 +90,6 @@ enum FishState : uint8_t {
 
 MX1508 bodyMotor(kPinBodyMotorA, kPinBodyMotorB);
 MX1508 mouthMotor(kPinMouthMotorA, kPinMouthMotorB);
-
-int soundPin = kPinSoundAnalog;
 
 unsigned long mouthLedLastToggle = 0;
 bool mouthLedOn = false;
@@ -167,7 +171,8 @@ void setup() {
   bodyMotor.setSpeed(kBodyMotorSpeedStop);
   mouthMotor.setSpeed(kBodyMotorSpeedStop);
 
-  pinMode(soundPin, INPUT);
+  pinMode(kPinSoundAnalogL, INPUT);
+  pinMode(kPinSoundAnalogR, INPUT);
 
   pinMode(kPinMouthLed, OUTPUT);
   digitalWrite(kPinMouthLed, LOW);
@@ -250,9 +255,16 @@ void SMBillyBass() {
 }
 
 void updateSoundInput() {
-  soundVolume = analogRead(soundPin);
+  const int left = analogRead(kPinSoundAnalogL);
+  const int right = analogRead(kPinSoundAnalogR);
+  const int wSum = kAudioChannelWeightL + kAudioChannelWeightR;
+  soundVolume = (left * kAudioChannelWeightL + right * kAudioChannelWeightR) / wSum;
   if (soundVolume != prevSoundVolume) {
     prevSoundVolume = soundVolume;
+    Serial.print(left);
+    Serial.print(' ');
+    Serial.print(right);
+    Serial.print(' ');
     Serial.println(soundVolume);
   }
 }
