@@ -43,7 +43,7 @@ constexpr uint8_t kPinMotorDisableSwitch = 4;
 constexpr long kSerialBaud = 9600;
 
 // --- Audio (analogRead 0..1023) ---
-constexpr int kSilenceThreshold = 25;
+constexpr int kSilenceThreshold = 5;
 constexpr int kPrevSoundVolumeUnset = -1;
 // Mix L/R for detection: combined = (L * wL + R * wR) / (wL + wR). Use 1,1 for equal
 // average; increase one weight if that channel is consistently quieter in hardware.
@@ -62,7 +62,6 @@ constexpr int kBodyMotorSpeedFull = 255;
 constexpr int kFlapBodySpeed = 180;
 
 // --- Timing (ms) ---
-constexpr unsigned long kMouthLedBlinkMs = 120;
 constexpr unsigned long kMouthTalkPhaseMs = 100;
 constexpr unsigned long kWaitStateMotorHaltAfterMouthMs = 100;
 constexpr unsigned long kBoredIdleMs = 1500;
@@ -91,7 +90,6 @@ enum FishState : uint8_t {
 MX1508 bodyMotor(kPinBodyMotorA, kPinBodyMotorB);
 MX1508 mouthMotor(kPinMouthMotorA, kPinMouthMotorB);
 
-unsigned long mouthLedLastToggle = 0;
 bool mouthLedOn = false;
 
 int bodySpeed = kBodyMotorSpeedStop;
@@ -113,6 +111,19 @@ MotorMode mouthModeLog = M_HALT;
 
 bool motorsMovementEnabled() {
   return digitalRead(kPinMotorDisableSwitch) == HIGH;
+}
+
+// Tracks kPinMotorDisableSwitch so we can re-arm timers and refresh drivers when
+// movement is turned back on (avoids getting stuck with stale mouth/body times
+// and leaves MX1508 outputs in a known state after many halt() cycles).
+static bool sPrevMotorsMovementEnabled = true;
+
+static void onMotorsMovementJustEnabled() {
+  mouthActionTime = currentTime - 1;
+  bodyActionTime = currentTime - 1;
+  // Avoid treating "never updated" as ages-old idle (lastActionTime was 0), which
+  // forced kFishStateFlap on the same pass as entering kFishStateTalking.
+  lastActionTime = currentTime;
 }
 
 void logMotorMode(const __FlashStringHelper* tag, MotorMode& prev, MotorMode next) {
@@ -178,6 +189,8 @@ void setup() {
   digitalWrite(kPinMouthLed, LOW);
 
   pinMode(kPinMotorDisableSwitch, INPUT_PULLUP);
+  sPrevMotorsMovementEnabled = motorsMovementEnabled();
+  lastActionTime = millis();
 
   Serial.begin(kSerialBaud);
 }
@@ -190,27 +203,26 @@ void loop() {
 }
 
 void updateMouthLed() {
-  if (fishState == kFishStateTalking) {
-    if (currentTime - mouthLedLastToggle >= kMouthLedBlinkMs) {
-      mouthLedLastToggle = currentTime;
-      mouthLedOn = !mouthLedOn;
-      digitalWrite(kPinMouthLed, mouthLedOn ? HIGH : LOW);
-    }
-  } else {
-    if (mouthLedOn) {
-      mouthLedOn = false;
-      digitalWrite(kPinMouthLed, LOW);
-    }
+  const bool inputActive = soundVolume > kSilenceThreshold;
+  if (mouthLedOn != inputActive) {
+    mouthLedOn = inputActive;
+    digitalWrite(kPinMouthLed, mouthLedOn ? HIGH : LOW);
   }
 }
 
 void SMBillyBass() {
-  if (!motorsMovementEnabled()) {
+  const bool movementEnabled = motorsMovementEnabled();
+  if (!movementEnabled) {
     bodyHalt();
     mouthHalt();
     fishState = kFishStateWait;
     talking = false;
+    sPrevMotorsMovementEnabled = false;
     return;
+  }
+  if (!sPrevMotorsMovementEnabled) {
+    sPrevMotorsMovementEnabled = true;
+    onMotorsMovementJustEnabled();
   }
 
   switch (fishState) {
@@ -225,7 +237,9 @@ void SMBillyBass() {
         bodyHalt();
         mouthHalt();
       }
-      if (currentTime - lastActionTime > kBoredIdleMs) {
+      // Do not run bored-flap in the same pass that transitioned to talking (would
+      // overwrite fishState while lastActionTime was still at its initial value).
+      if (fishState == kFishStateWait && currentTime - lastActionTime > kBoredIdleMs) {
         lastActionTime = currentTime + floor(random(kFlapCooldownMinS, kFlapCooldownMaxS)) * kMsPerSecond;
         fishState = kFishStateFlap;
       }
@@ -306,22 +320,17 @@ void articulateBody(bool talking) {
         bodyActionTime = currentTime + floor(random(kBodyActionScheduleMinMs, kBodyActionScheduleMaxMs));
         bodyFwd();
 
-      } else if (r == 4) {
+      } else if (r < 6) {
         bodySpeed = kBodyMotorSpeedMedium;
-        bodyActionTime = currentTime + floor(random(kBodyActionScheduleMinMs, kBodyActionScheduleMaxMs));
+        bodyActionTime = currentTime + floor(random(kBodyLongActionMinMs, kBodyLongActionMaxMs));
         bodyFwd();
 
-      } else if (r == 5) {
+      } else {
         bodySpeed = kBodyMotorSpeedStop;
         bodyHalt();
         bodyMotor.setSpeed(kBodyMotorSpeedFull);
         bodyRev();
         bodyActionTime = currentTime + floor(random(kBodyTailActionMinMs, kBodyTailActionMaxMs));
-      }
-      else {
-        bodySpeed = kBodyMotorSpeedFull;
-        bodyFwd();
-        bodyActionTime = currentTime + floor(random(kBodyLongActionMinMs, kBodyLongActionMaxMs));
       }
     }
 
