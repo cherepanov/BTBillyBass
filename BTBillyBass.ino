@@ -44,12 +44,15 @@ constexpr long kSerialBaud = 9600;
 
 // --- Audio (analogRead 0..1023) ---
 // Lower = mouth reacts to quieter audio and opens more readily (watch for noise if too low).
-constexpr int kSilenceThreshold = 3;
+constexpr int kSilenceThreshold = 480; //3;
 constexpr int kPrevSoundVolumeUnset = -1;
 // Mix L/R for detection: combined = (L * wL + R * wR) / (wL + wR). Use 1,1 for equal
 // average; increase one weight if that channel is consistently quieter in hardware.
 constexpr int kAudioChannelWeightL = 1;
 constexpr int kAudioChannelWeightR = 1;
+// First-order low-pass on the mixed level (0..255): reduces ADC/motor hash and fast ripple
+// from the line. Lower = heavier filtering and slower response; higher = snappier.
+constexpr uint8_t kAudioSmoothing = 24;
 
 // --- Mouth motor PWM speeds (0..255) ---
 constexpr int kMouthOpenSpeed = 220;
@@ -96,6 +99,7 @@ bool mouthLedOn = false;
 int bodySpeed = kBodyMotorSpeedStop;
 int soundVolume = 0;
 int prevSoundVolume = kPrevSoundVolumeUnset;
+static int sFilteredSoundVolume = -1;
 FishState fishState = kFishStateWait;
 
 bool talking = false;
@@ -273,7 +277,15 @@ void updateSoundInput() {
   const int left = analogRead(kPinSoundAnalogL);
   const int right = analogRead(kPinSoundAnalogR);
   const int wSum = kAudioChannelWeightL + kAudioChannelWeightR;
-  soundVolume = (left * kAudioChannelWeightL + right * kAudioChannelWeightR) / wSum;
+  const int mixed =
+      (left * kAudioChannelWeightL + right * kAudioChannelWeightR) / wSum;
+  if (sFilteredSoundVolume < 0) {
+    sFilteredSoundVolume = mixed;
+  } else {
+    sFilteredSoundVolume +=
+        ((int32_t)(mixed - sFilteredSoundVolume) * (int32_t)kAudioSmoothing) / 256;
+  }
+  soundVolume = sFilteredSoundVolume;
   if (soundVolume != prevSoundVolume) {
     prevSoundVolume = soundVolume;
     Serial.print(left);
