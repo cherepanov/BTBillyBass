@@ -8,8 +8,9 @@
  chips (such as the L298N), so long as you can PWM the inputs.
 
  This code reads stereo audio on A0 (left) and A1 (right), mixes them with equal weights
- (adjustable) for detection, and when the combined level rises above a set threshold it
- opens the mouth of the fish. When the level falls below the threshold, the mouth closes.
+ (adjustable) for detection. Detection uses a speech-weighted band (~300 Hz–3 kHz) plus an
+ envelope follower so hum and deep bass do not drive the mouth. When the level rises above
+ a threshold it opens the mouth; when it falls below, the mouth closes.
  The result is the appearance of the mouth "riding the wave" of audio amplitude, and
  reacting to each spike by opening again. There is also some code which adds body
  movements for a bit more personality while talking.
@@ -30,8 +31,8 @@
 // --- Pin assignments (Nano) ---
 constexpr uint8_t kPinBodyMotorA = 6;
 constexpr uint8_t kPinBodyMotorB = 9;
-constexpr uint8_t kPinMouthMotorA = 3;
-constexpr uint8_t kPinMouthMotorB = 5;
+constexpr uint8_t kPinMouthMotorA = 3; //5
+constexpr uint8_t kPinMouthMotorB = 5; //3
 constexpr uint8_t kPinSoundAnalogL = A0;
 constexpr uint8_t kPinSoundAnalogR = A1;
 // LED: D2 -> 220–330 ohm -> LED -> GND
@@ -43,12 +44,26 @@ constexpr uint8_t kPinMotorDisableSwitch = 4;
 constexpr long kSerialBaud = 9600;
 
 // --- Audio (analogRead 0..1023) ---
-constexpr int kSilenceThreshold = 5;
+// Speech-band envelope is scaled to 0..1023; typical silence/speech split is far below
+// raw ADC thresholds—start ~60–120 and tune (lower = more sensitive).
+constexpr int kSilenceThreshold = 85;
 constexpr int kPrevSoundVolumeUnset = -1;
 // Mix L/R for detection: combined = (L * wL + R * wR) / (wL + wR). Use 1,1 for equal
 // average; increase one weight if that channel is consistently quieter in hardware.
 constexpr int kAudioChannelWeightL = 1;
 constexpr int kAudioChannelWeightR = 1;
+
+// Speech-band path: sample period sets effective Fs (~1e6 / us); coefficients match
+// ~4.8 kHz (two analogReads per tick). If you change kSpeechSamplePeriodUs, retune alphas.
+constexpr unsigned long kSpeechSamplePeriodUs = 208;
+// One-pole high-pass ~300 Hz (removes hum/fundamentals); low-pass ~3 kHz (limits hash).
+constexpr float kSpeechHpAlpha = 0.718f;
+constexpr float kSpeechLpAlpha = 0.797f;
+// Envelope smoother ~60 Hz; higher alpha = faster mouth tracking, more ripple.
+constexpr float kSpeechEnvAlpha = 0.073f;
+constexpr float kDcBlockR = 0.992f;
+// Post-envelope gain into 0..1023; lower if the mouth is too eager, raise if it ignores speech.
+constexpr float kSpeechEnvGain = 18.f;
 
 // --- Mouth motor PWM speeds (0..255) ---
 constexpr int kMouthOpenSpeed = 220;
@@ -56,13 +71,13 @@ constexpr int kMouthCloseSpeed = 180;
 
 // --- Body motor PWM speeds (0..255) ---
 constexpr int kBodyMotorSpeedStop = 0;
-constexpr int kBodyMotorSpeedSlow = 150;
-constexpr int kBodyMotorSpeedMedium = 200;
-constexpr int kBodyMotorSpeedFull = 255;
-constexpr int kFlapBodySpeed = 180;
-
+constexpr int kBodyMotorSpeedSlow = 115;
+constexpr int kBodyMotorSpeedMedium = 155;
+constexpr int kBodyMotorSpeedFull = 195;
+constexpr int kFlapBodySpeed = 135;
 // --- Timing (ms) ---
-constexpr unsigned long kMouthTalkPhaseMs = 100;
+// Shorter = return to wait sooner so the next open can trigger more often on changing level.
+constexpr unsigned long kMouthTalkPhaseMs =  170;
 constexpr unsigned long kWaitStateMotorHaltAfterMouthMs = 100;
 constexpr unsigned long kBoredIdleMs = 1500;
 constexpr unsigned long kFlapHoldMs = 500;
@@ -96,6 +111,14 @@ int bodySpeed = kBodyMotorSpeedStop;
 int soundVolume = 0;
 int prevSoundVolume = kPrevSoundVolumeUnset;
 FishState fishState = kFishStateWait;
+
+// Speech-band filter state (updateSoundInput)
+static unsigned long sNextSpeechSampleUs = 0;
+static bool sSpeechFilterPrimed = false;
+static float sDcXm1 = 0, sDcYm1 = 0;
+static float sHpXm1 = 0, sHpYm1 = 0;
+static float sLpY = 0;
+static float sEnv = 0;
 
 bool talking = false;
 
@@ -268,16 +291,70 @@ void SMBillyBass() {
   }
 }
 
+// One new mixed sample (0..1023); updates sEnv and maps to soundVolume.
+static void processSpeechBandSample(int mixed) {
+  const float x = (float)mixed - 512.f;
+
+  if (!sSpeechFilterPrimed) {
+    sDcXm1 = x;
+    sDcYm1 = 0.f;
+    sHpXm1 = x;
+    sHpYm1 = 0.f;
+    sLpY = 0.f;
+    sEnv = 0.f;
+    sSpeechFilterPrimed = true;
+  }
+
+  const float dc = x - sDcXm1 + kDcBlockR * sDcYm1;
+  sDcXm1 = x;
+  sDcYm1 = dc;
+
+  const float hp = kSpeechHpAlpha * (sHpYm1 + dc - sHpXm1);
+  sHpXm1 = dc;
+  sHpYm1 = hp;
+
+  sLpY += kSpeechLpAlpha * (hp - sLpY);
+
+  const float rect = fabsf(sLpY);
+  sEnv += kSpeechEnvAlpha * (rect - sEnv);
+
+  const float scaled = sEnv * kSpeechEnvGain;
+  long v = (long)(scaled + 0.5f);
+  if (v < 0) {
+    v = 0;
+  } else if (v > 1023) {
+    v = 1023;
+  }
+  soundVolume = (int)v;
+}
+
 void updateSoundInput() {
-  const int left = analogRead(kPinSoundAnalogL);
-  const int right = analogRead(kPinSoundAnalogR);
-  const int wSum = kAudioChannelWeightL + kAudioChannelWeightR;
-  soundVolume = (left * kAudioChannelWeightL + right * kAudioChannelWeightR) / wSum;
+  const unsigned long now = micros();
+  if (sNextSpeechSampleUs == 0) {
+    sNextSpeechSampleUs = now;
+  }
+
+  static int sDbgLeft = 0;
+  static int sDbgRight = 0;
+
+  if ((unsigned long)(now - sNextSpeechSampleUs) >= kSpeechSamplePeriodUs) {
+    sNextSpeechSampleUs += kSpeechSamplePeriodUs;
+    if ((unsigned long)(now - sNextSpeechSampleUs) >= kSpeechSamplePeriodUs * 4) {
+      sNextSpeechSampleUs = now;
+    }
+    sDbgLeft = analogRead(kPinSoundAnalogL);
+    sDbgRight = analogRead(kPinSoundAnalogR);
+    const int wSum = kAudioChannelWeightL + kAudioChannelWeightR;
+    const int mixed =
+        (sDbgLeft * kAudioChannelWeightL + sDbgRight * kAudioChannelWeightR) / wSum;
+    processSpeechBandSample(mixed);
+  }
+
   if (soundVolume != prevSoundVolume) {
     prevSoundVolume = soundVolume;
-    Serial.print(left);
+    Serial.print(sDbgLeft);
     Serial.print(' ');
-    Serial.print(right);
+    Serial.print(sDbgRight);
     Serial.print(' ');
     Serial.println(soundVolume);
   }
