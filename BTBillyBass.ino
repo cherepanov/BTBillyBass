@@ -43,7 +43,8 @@ constexpr uint8_t kPinMotorDisableSwitch = 4;
 constexpr long kSerialBaud = 9600;
 
 // --- Audio (analogRead 0..1023) ---
-constexpr int kSilenceThreshold = 5;
+// Lower = mouth reacts to quieter audio and opens more readily (watch for noise if too low).
+constexpr int kSilenceThreshold = 3;
 constexpr int kPrevSoundVolumeUnset = -1;
 // Mix L/R for detection: combined = (L * wL + R * wR) / (wL + wR). Use 1,1 for equal
 // average; increase one weight if that channel is consistently quieter in hardware.
@@ -56,13 +57,13 @@ constexpr int kMouthCloseSpeed = 180;
 
 // --- Body motor PWM speeds (0..255) ---
 constexpr int kBodyMotorSpeedStop = 0;
-constexpr int kBodyMotorSpeedSlow = 150;
-constexpr int kBodyMotorSpeedMedium = 200;
-constexpr int kBodyMotorSpeedFull = 255;
-constexpr int kFlapBodySpeed = 180;
-
+constexpr int kBodyMotorSpeedSlow = 115;
+constexpr int kBodyMotorSpeedMedium = 155;
+constexpr int kBodyMotorSpeedFull = 195;
+constexpr int kFlapBodySpeed = 135;
 // --- Timing (ms) ---
-constexpr unsigned long kMouthTalkPhaseMs = 100;
+// Shorter = return to wait sooner so the next open can trigger more often on changing level.
+constexpr unsigned long kMouthTalkPhaseMs =  170;
 constexpr unsigned long kWaitStateMotorHaltAfterMouthMs = 100;
 constexpr unsigned long kBoredIdleMs = 1500;
 constexpr unsigned long kFlapHoldMs = 500;
