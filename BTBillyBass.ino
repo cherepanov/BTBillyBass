@@ -41,7 +41,11 @@ constexpr uint8_t kPinMouthLed = 2;
 constexpr uint8_t kPinMotorDisableSwitch = 4;
 
 // --- Serial ---
-constexpr long kSerialBaud = 9600;
+// Higher baud = less time blocked in Serial.print when logging is on. Must match Silice /
+// Serial Monitor (or host will show garbage).
+constexpr long kSerialBaud = 115200;
+// Motor-mode lines and ADC/soundVolume stream; set false to keep Serial quiet.
+bool gSerialLogsEnabled = true;
 
 // --- Audio (analogRead 0..1023) ---
 // Speech-band envelope is scaled to 0..1023; typical silence/speech split is far below
@@ -209,6 +213,9 @@ static void calibrateAudioZeroPoint() {
 void logMotorMode(const __FlashStringHelper* tag, MotorMode& prev, MotorMode next) {
   if (prev != next) {
     prev = next;
+    if (!gSerialLogsEnabled) {
+      return;
+    }
     Serial.print(tag);
     Serial.print(' ');
     if (next == M_HALT) {
@@ -274,12 +281,14 @@ void setup() {
 
   Serial.begin(kSerialBaud);
   calibrateAudioZeroPoint();
-  Serial.print(F("zero L/R/M "));
-  Serial.print(sZeroLeft);
-  Serial.print(' ');
-  Serial.print(sZeroRight);
-  Serial.print(' ');
-  Serial.println(sZeroMixed);
+  if (gSerialLogsEnabled) {
+    Serial.print(F("zero L/R/M "));
+    Serial.print(sZeroLeft);
+    Serial.print(' ');
+    Serial.print(sZeroRight);
+    Serial.print(' ');
+    Serial.println(sZeroMixed);
+  }
 }
 
 void loop() {
@@ -416,11 +425,13 @@ void updateSoundInput() {
 
   if (soundVolume != prevSoundVolume) {
     prevSoundVolume = soundVolume;
-    Serial.print(sDbgLeft);
-    Serial.print(' ');
-    Serial.print(sDbgRight);
-    Serial.print(' ');
-    Serial.println(soundVolume);
+    if (gSerialLogsEnabled) {
+      Serial.print(sDbgLeft);
+      Serial.print(' ');
+      Serial.print(sDbgRight);
+      Serial.print(' ');
+      Serial.println(soundVolume);
+    }
   }
 }
 
@@ -445,6 +456,7 @@ void closeMouth() {
 }
 
 void articulateBody(bool talking) {
+  static int sLastBodySpeedApplied = kBodyMotorSpeedStop - 1;
   if (!motorsMovementEnabled()) {
     return;
   }
@@ -475,10 +487,17 @@ void articulateBody(bool talking) {
       }
     }
 
-    bodyMotor.setSpeed(bodySpeed);
+    // Avoid setSpeed every loop iteration: with Serial quiet the loop is much faster and Silice /
+    // co-sim can spend disproportionate time here without changing behavior vs. slower loops.
+    if (bodySpeed != sLastBodySpeedApplied) {
+      bodyMotor.setSpeed(bodySpeed);
+      sLastBodySpeedApplied = bodySpeed;
+    }
   } else {
     if (currentTime > bodyActionTime) {
       bodyHalt();
+      // bodySpeed can match pre-halt value; force next talking pass to setSpeed again after halt().
+      sLastBodySpeedApplied = kBodyMotorSpeedStop - 1;
       bodyActionTime = currentTime + floor(random(kBodyRestMinMs, kBodyRestMaxMs));
     }
   }
