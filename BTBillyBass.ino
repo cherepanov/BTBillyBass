@@ -46,12 +46,16 @@ constexpr long kSerialBaud = 9600;
 // --- Audio (analogRead 0..1023) ---
 // Speech-band envelope is scaled to 0..1023; typical silence/speech split is far below
 // raw ADC thresholds—start ~60–120 and tune (lower = more sensitive).
-constexpr int kSilenceThreshold = 85;
+constexpr int kSilenceThreshold = 105;
 constexpr int kPrevSoundVolumeUnset = -1;
 // Mix L/R for detection: combined = (L * wL + R * wR) / (wL + wR). Use 1,1 for equal
 // average; increase one weight if that channel is consistently quieter in hardware.
 constexpr int kAudioChannelWeightL = 1;
 constexpr int kAudioChannelWeightR = 1;
+// Startup DC-bias calibration (handles noisy startup by trimming extremes).
+constexpr uint16_t kZeroCalSamples = 160;
+constexpr uint16_t kZeroCalDiscard = 16;
+constexpr uint8_t kZeroCalSampleDelayMs = 2;
 
 // Speech-band path: sample period sets effective Fs (~1e6 / us); coefficients match
 // ~4.8 kHz (two analogReads per tick). If you change kSpeechSamplePeriodUs, retune alphas.
@@ -119,6 +123,9 @@ static float sDcXm1 = 0, sDcYm1 = 0;
 static float sHpXm1 = 0, sHpYm1 = 0;
 static float sLpY = 0;
 static float sEnv = 0;
+static int16_t sZeroLeft = 512;
+static int16_t sZeroRight = 512;
+static int16_t sZeroMixed = 512;
 
 bool talking = false;
 
@@ -147,6 +154,56 @@ static void onMotorsMovementJustEnabled() {
   // Avoid treating "never updated" as ages-old idle (lastActionTime was 0), which
   // forced kFishStateFlap on the same pass as entering kFishStateTalking.
   lastActionTime = currentTime;
+}
+
+static int calibrateChannelZeroPoint(uint8_t pin) {
+  int minV = 1023;
+  int maxV = 0;
+  long sum = 0;
+
+  for (uint16_t i = 0; i < kZeroCalSamples; ++i) {
+    const int v = analogRead(pin);
+    if (v < minV) {
+      minV = v;
+    }
+    if (v > maxV) {
+      maxV = v;
+    }
+    sum += v;
+    delay(kZeroCalSampleDelayMs);
+  }
+
+  // Trim noise spikes using observed min/max before final average.
+  long trimmedSum = sum - (long)minV * kZeroCalDiscard - (long)maxV * kZeroCalDiscard;
+  const long trimmedCount = (long)kZeroCalSamples - 2L * kZeroCalDiscard;
+  if (trimmedCount <= 0) {
+    return 512;
+  }
+  int zero = (int)(trimmedSum / trimmedCount);
+  if (zero < 0) {
+    zero = 0;
+  } else if (zero > 1023) {
+    zero = 1023;
+  }
+  return zero;
+}
+
+static void calibrateAudioZeroPoint() {
+  sZeroLeft = (int16_t)calibrateChannelZeroPoint(kPinSoundAnalogL);
+  sZeroRight = (int16_t)calibrateChannelZeroPoint(kPinSoundAnalogR);
+  const int wSum = kAudioChannelWeightL + kAudioChannelWeightR;
+  sZeroMixed = (int16_t)((sZeroLeft * kAudioChannelWeightL + sZeroRight * kAudioChannelWeightR) / wSum);
+
+  sSpeechFilterPrimed = false;
+  sDcXm1 = 0.f;
+  sDcYm1 = 0.f;
+  sHpXm1 = 0.f;
+  sHpYm1 = 0.f;
+  sLpY = 0.f;
+  sEnv = 0.f;
+  soundVolume = 0;
+  prevSoundVolume = kPrevSoundVolumeUnset;
+  sNextSpeechSampleUs = 0;
 }
 
 void logMotorMode(const __FlashStringHelper* tag, MotorMode& prev, MotorMode next) {
@@ -216,6 +273,13 @@ void setup() {
   lastActionTime = millis();
 
   Serial.begin(kSerialBaud);
+  calibrateAudioZeroPoint();
+  Serial.print(F("zero L/R/M "));
+  Serial.print(sZeroLeft);
+  Serial.print(' ');
+  Serial.print(sZeroRight);
+  Serial.print(' ');
+  Serial.println(sZeroMixed);
 }
 
 void loop() {
@@ -293,7 +357,7 @@ void SMBillyBass() {
 
 // One new mixed sample (0..1023); updates sEnv and maps to soundVolume.
 static void processSpeechBandSample(int mixed) {
-  const float x = (float)mixed - 512.f;
+  const float x = (float)(mixed - sZeroMixed);
 
   if (!sSpeechFilterPrimed) {
     sDcXm1 = x;
