@@ -50,7 +50,11 @@ bool gSerialLogsEnabled = true;
 // --- Audio (analogRead 0..1023) ---
 // Speech-band envelope is scaled to 0..1023; typical silence/speech split is far below
 // raw ADC thresholds—start ~60–120 and tune (lower = more sensitive).
+<<<<<<< HEAD
 constexpr int kSilenceThreshold = 105;
+=======
+constexpr int kSilenceThreshold = 85;
+>>>>>>> master
 constexpr int kPrevSoundVolumeUnset = -1;
 // Mix L/R for detection: combined = (L * wL + R * wR) / (wL + wR). Use 1,1 for equal
 // average; increase one weight if that channel is consistently quieter in hardware.
@@ -60,6 +64,18 @@ constexpr int kAudioChannelWeightR = 1;
 constexpr uint16_t kZeroCalSamples = 160;
 constexpr uint16_t kZeroCalDiscard = 16;
 constexpr uint8_t kZeroCalSampleDelayMs = 2;
+
+// Speech-band path: sample period sets effective Fs (~1e6 / us); coefficients match
+// ~4.8 kHz (two analogReads per tick). If you change kSpeechSamplePeriodUs, retune alphas.
+constexpr unsigned long kSpeechSamplePeriodUs = 208;
+// One-pole high-pass ~300 Hz (removes hum/fundamentals); low-pass ~3 kHz (limits hash).
+constexpr float kSpeechHpAlpha = 0.718f;
+constexpr float kSpeechLpAlpha = 0.797f;
+// Envelope smoother ~60 Hz; higher alpha = faster mouth tracking, more ripple.
+constexpr float kSpeechEnvAlpha = 0.073f;
+constexpr float kDcBlockR = 0.992f;
+// Post-envelope gain into 0..1023; lower if the mouth is too eager, raise if it ignores speech.
+constexpr float kSpeechEnvGain = 18.f;
 
 // Speech-band path: sample period sets effective Fs (~1e6 / us); coefficients match
 // ~4.8 kHz (two analogReads per tick). If you change kSpeechSamplePeriodUs, retune alphas.
@@ -127,9 +143,12 @@ static float sDcXm1 = 0, sDcYm1 = 0;
 static float sHpXm1 = 0, sHpYm1 = 0;
 static float sLpY = 0;
 static float sEnv = 0;
+<<<<<<< HEAD
 static int16_t sZeroLeft = 512;
 static int16_t sZeroRight = 512;
 static int16_t sZeroMixed = 512;
+=======
+>>>>>>> master
 
 bool talking = false;
 
@@ -366,7 +385,11 @@ void SMBillyBass() {
 
 // One new mixed sample (0..1023); updates sEnv and maps to soundVolume.
 static void processSpeechBandSample(int mixed) {
+<<<<<<< HEAD
   const float x = (float)(mixed - sZeroMixed);
+=======
+  const float x = (float)mixed - 512.f;
+>>>>>>> master
 
   if (!sSpeechFilterPrimed) {
     sDcXm1 = x;
@@ -425,6 +448,7 @@ void updateSoundInput() {
 
   if (soundVolume != prevSoundVolume) {
     prevSoundVolume = soundVolume;
+<<<<<<< HEAD
     if (gSerialLogsEnabled) {
       Serial.print(sDbgLeft);
       Serial.print(' ');
@@ -432,6 +456,13 @@ void updateSoundInput() {
       Serial.print(' ');
       Serial.println(soundVolume);
     }
+=======
+    Serial.print(sDbgLeft);
+    Serial.print(' ');
+    Serial.print(sDbgRight);
+    Serial.print(' ');
+    Serial.println(soundVolume);
+>>>>>>> master
   }
 }
 

@@ -1,0 +1,104 @@
+// BTBillyBass — full wiring / block diagram
+// Render to image:
+//   dot -Tpng BTBillyBass-full-scheme.dot -o BTBillyBass-full-scheme.png
+//   dot -Tsvg BTBillyBass-full-scheme.dot -o BTBillyBass-full-scheme.svg
+// Requires: graphviz (apt install graphviz / brew install graphviz)
+
+digraph BTBillyBass {
+  graph [
+    rankdir = LR,
+    bgcolor = "white",
+    fontname = "Helvetica",
+    labelloc = "t",
+    label = "BTBillyBass — MH-M38 + Arduino Nano + MX1508 (Big Mouth Billy Bass)",
+    fontsize = 14
+  ];
+  node [fontname = "Helvetica", fontsize = 10];
+  edge [fontname = "Helvetica", fontsize = 9];
+
+  // ---------- Power ----------
+  subgraph cluster_pwr {
+    label = "Power (common GND for all blocks)";
+    style = rounded;
+    color = gray;
+    PSU [shape=box, label="5 V supply\n(adequate current for\nMH-M38 amp + Arduino)"];
+    GND [shape=point, width=0.15, label=""];
+    GND_lbl [shape=plaintext, label="GND\n(bus)"];
+  }
+
+  // ---------- MH-M38 ----------
+  subgraph cluster_mh {
+    label = "MH-M38 (Bluetooth receiver + TC8871 stereo amp)";
+    style = rounded;
+    color = "#0066aa";
+    MH [shape=box, style="rounded,filled", fillcolor="#e8f4ff", label="MH-M38 board\n• Pair phone over BT\n• Line/headphone L/R/GND tap\n  (preferred for Arduino)\n• Speaker OUT L/R"];
+    SPK_L [shape=box, label="Speaker L\n(4–8 Ω)"];
+    SPK_R [shape=box, label="Speaker R\n(4–8 Ω)"];
+    MH -> SPK_L [label="OUT L+/L−"];
+    MH -> SPK_R [label="OUT R+/R−"];
+  }
+
+  // ---------- Audio front-end (stereo) ----------
+  subgraph cluster_analog {
+    label = "Analog front-end per channel (build ×2: L→A0, R→A1)\nC_in 1µF | R_series 10k | R_bias 100k to +5V, 100k to GND at Arduino pin";
+    style = rounded;
+    color = "#228822";
+    AF_L [shape=component, label="L channel:\nC_in — R_series —► A0\n        ╲__ 100k — +5V\n        ╲__ 100k — GND"];
+    AF_R [shape=component, label="R channel:\nC_in — R_series —► A1\n        ╲__ 100k — +5V\n        ╲__ 100k — GND"];
+  }
+
+  // ---------- Arduino ----------
+  subgraph cluster_arduino {
+    label = "Arduino Nano (BTBillyBass.ino)";
+    style = rounded;
+    color = "#00979d";
+    ARD [shape=box, style="rounded,filled", fillcolor="#d9f7f8", label="Arduino Nano\n\nPWM / digital:\n D2 LED\n D3/D5 mouth motor\n D4 disable switch\n D6/D9 body motor\n\nAnalog in:\n A0 ← Left (biased)\n A1 ← Right (biased)\n\n+5V, GND"];
+  }
+
+  // ---------- MX1508 H-bridges ----------
+  subgraph cluster_mx {
+    label = "MX1508 dual H-bridge modules (or equivalent)";
+    style = rounded;
+    color = "#884400";
+    MX1 [shape=box, label="MX1508 #1 — mouth motor\nIN1 ← D3\nIN2 ← D5\nVmotor, GND\nOUT → mouth motor"];
+    MX2 [shape=box, label="MX1508 #2 — body motor\nIN1 ← D6\nIN2 ← D9\nVmotor, GND\nOUT → body motor"];
+    M_MOUTH [shape=cylinder, label="Mouth\nmotor"];
+    M_BODY [shape=cylinder, label="Body\nmotor"];
+    MX1 -> M_MOUTH;
+    MX2 -> M_BODY;
+  }
+
+  // ---------- UI ----------
+  subgraph cluster_ui {
+    label = "User I/O";
+    style = rounded;
+    LED [shape=box, label="LED\n220–330 Ω\nD2 → LED → GND"];
+    SW [shape=box, label="SPST motor disable\nD4 — switch — GND\n(HIGH = motors on)"];
+  }
+
+  // Connections
+  PSU -> MH [label="5 V"];
+  PSU -> ARD [label="5 V\n(or USB)"];
+  PSU -> MX1 [label="Vmotor\n(often 5 V)"];
+  PSU -> MX2 [label="Vmotor"];
+
+  MH -> AF_L [label="L (line tap)\nnot speaker"];
+  MH -> AF_R [label="R (line tap)\nnot speaker"];
+  AF_L -> ARD [label="", style=dashed];
+  AF_R -> ARD [style=dashed];
+
+  ARD -> MX1 [label="D3,D5"];
+  ARD -> MX2 [label="D6,D9"];
+  ARD -> LED;
+  ARD -> SW;
+
+  { rank=same; GND_lbl; }
+  MH -> GND_lbl [style=dotted, label=" GND"];
+  ARD -> GND_lbl [style=dotted, label=" GND"];
+  MX1 -> GND_lbl [style=dotted, label=" GND"];
+  MX2 -> GND_lbl [style=dotted, label=" GND"];
+  AF_L -> GND_lbl [style=dotted, label=" GND"];
+  AF_R -> GND_lbl [style=dotted, label=" GND"];
+  SW -> GND_lbl [style=dotted];
+  LED -> GND_lbl [style=dotted];
+}

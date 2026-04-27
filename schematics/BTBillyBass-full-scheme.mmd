@@ -1,0 +1,61 @@
+%% BTBillyBass — full system diagram (Mermaid)
+%% Convert to PNG/SVG:
+%%   - Paste into https://mermaid.live  → Export PNG/SVG
+%%   - Or: npx @mermaid-js/mermaid-cli -i BTBillyBass-full-scheme.mmd -o BTBillyBass-full-scheme.png
+
+flowchart LR
+  subgraph PWR["Power — single GND reference"]
+    V5["5 V supply\n(enough current for\nMH-M38 + Arduino)"]
+    GND["GND bus"]
+  end
+
+  subgraph MH["MH-M38 — BT + TC8871"]
+    MHB["MH-M38 board"]
+    SPKL["Speaker L"]
+    SPKR["Speaker R"]
+    MHB -->|"OUT L"| SPKL
+    MHB -->|"OUT R"| SPKR
+  end
+
+  subgraph AF["Analog front-end ×2 (L→A0, R→A1)"]
+    direction TB
+    AFnote["Per channel:\nC_in 1µF → R_series 10k → Arduino pin\nSame pin: 100k to +5V, 100k to GND\n(tap LINE L/R — not speaker outputs)"]
+  end
+
+  subgraph ARD["Arduino Nano — BTBillyBass.ino"]
+    AN["A0 left, A1 right\nD2 LED\nD3/D5 mouth\nD4 switch\nD6/D9 body"]
+  end
+
+  subgraph MX["MX1508 ×2"]
+    MX1["Mouth H-bridge\nD3 D5"]
+    MX2["Body H-bridge\nD6 D9"]
+    MM["Mouth motor"]
+    BM["Body motor"]
+    MX1 --> MM
+    MX2 --> BM
+  end
+
+  subgraph UI["User I/O"]
+    LED["LED + resistor\nD2"]
+    SW["Motor disable\nD4 to GND"]
+  end
+
+  V5 --> MHB
+  V5 --> AN
+  V5 --> MX1
+  V5 --> MX2
+  MHB -->|"line L"| AF
+  MHB -->|"line R"| AF
+  AF --> AN
+  AN --> MX1
+  AN --> MX2
+  AN --> LED
+  AN --> SW
+
+  MHB --- GND
+  AN --- GND
+  MX1 --- GND
+  MX2 --- GND
+  AF --- GND
+  LED --- GND
+  SW --- GND
